@@ -7,16 +7,27 @@ defmodule Tar do
 
   Create a tar archive :
 
-    tar = Tar.Archive[ file: "/path/to/archive.tar" ]
-    tar = tar 
-          |> Tar.add("path/to/file.1", "path/to")
-          |> Tar.add("root/to/file.2", "root")
-          |> Tar.create()
+      tar = Tar.Archive[ file: "/path/to/archive.tar" ]
+      tar = tar 
+            |> Tar.add("path/to/file.1", "path/to")
+            |> Tar.add("root/to/file.2", "root")
+            |> Tar.create()
 
   Extract content of a tar archive
 
       tar = Tar.Archive[ file: "/path/to/archive.tar" ]
       Tar.extract(tar)
+
+  or
+
+      Tar.Archive[ file: "/path/to/archive.tar" ] |> Tar.extract
+
+  Get informations about the content of a tar archive
+
+      tar = Tar.Archive[ file: "/path/to/archive.tar" ] |> Tar.read
+      number_of_file_in_tar = Tar.count(tar)
+      file_info = Tar.get(tar, file_id)
+
   """
 
   defexception FileError, message: "unknown error", can_retry: false do
@@ -32,6 +43,7 @@ defmodule Tar do
   end
 
   @header_size          512
+
   @header_name_pos        0
   @header_name_size     100
   @header_mode_pos      100
@@ -64,6 +76,18 @@ defmodule Tar do
   @header_devminor_size   8
   @header_prefix_pos    345
   @header_prefix_size   155
+
+  @tar_normal_file       "0"
+  @tar_hard_link         "1"
+  @tar_symbolic_link     "2"
+  @tar_character_special "3"
+  @tar_block_special     "4"
+  @tar_directory         "5"
+  @tar_fifo              "6"
+  @tar_continuous_file   "7"
+  @tar_pax_extension     "x"
+  @tar_gpax_extension    "g"
+
   defrecord Header, 
     name: nil, 
     mode: nil,
@@ -82,17 +106,6 @@ defmodule Tar do
     devminor: nil,
     prefix: nil
 
-  @tar_normal_file       "0"
-  @tar_hard_link         "1"
-  @tar_symbolic_link     "2"
-  @tar_character_special "3"
-  @tar_block_special     "4"
-  @tar_directory         "5"
-  @tar_fifo              "6"
-  @tar_continuous_file   "7"
-  @tar_pax_extension     "x"
-  @tar_gpax_extension    "g"
-
   defrecord Pax, header: nil, data: nil do
     record_type header: Header.t
     record_type data: String.t
@@ -105,7 +118,21 @@ defmodule Tar do
     record_type content: any
   end
 
+  defrecord EntryInfo, path: nil, size: nil, type: nil, uname: nil, gname: nil do
+    @moduledoc """
+    Tar entry informations
+    """
+    record_type path: String.t
+    record_type size: number
+    record_type type: String.t
+    record_type uname: String.t
+    record_type gname: String.t
+  end
+  
   defrecord Archive, path: nil, entries: [] do
+    @moduledoc """
+    Tar archive
+    """
     record_type path: String.t
     record_type entries: [ Entry.t ]
   end
@@ -157,20 +184,6 @@ defmodule Tar do
   end
 
   @doc """
-  Open a new or existing Tar Archive
-  """
-  def open(file) do
-    Archive.new path: file
-  end
-
-  @doc """
-  Read the content of a Tar archive
-  """
-  @spec read(Archive.t) :: Archive.t
-  def read(archive) do
-  end
-
-  @doc """
   Extract all content of a Tar archive
   """
   @spec extract(Archive.t, String.t) :: Archive.t
@@ -181,6 +194,8 @@ defmodule Tar do
     end
 
     extract_entry(io, path)
+
+    archive
   end
   def extract(archive) do
     extract(archive, ".")
@@ -261,10 +276,39 @@ defmodule Tar do
   end
 
   @doc """
+  Read the content of a Tar archive
+  """
+  @spec read(Archive.t) :: Archive.t
+  def read(archive) do
+    # TODO
+    archive
+  end
+
+  @doc """
+  Get the number of file in the tar archive
+  """
+  @spec count(Archive.t) :: number
+  def count(archive) do
+    # TODO
+    0
+  end
+
+  @doc """
+  Get tar entry informations
+  """
+  @spec get(Archive.t, number) :: EntryInfo.t
+  def get(archive, id) do
+    # TODO
+    nil
+  end
+
+  @doc """
   Create a Tar file
   """
   @spec create(Archive.t) :: Archive.t
   def create(archive) do
+    # TODO
+    archive
   end
 
   @doc """
@@ -272,6 +316,8 @@ defmodule Tar do
   """
   @spec add(Archive.t, String.t, String.t) :: Archive.t
   def add(archive, file, root) do
+    # TODO
+    archive
   end
   def add(archive, file) do 
     add(archive, file, "")
