@@ -88,6 +88,9 @@ defmodule Tar do
   @tar_pax_extension     "x"
   @tar_gpax_extension    "g"
 
+  @tar_record_size 512
+  @io_buffer_size  2048*@tar_record_size
+
   defrecord Header, 
     name: nil, 
     mode: nil,
@@ -111,11 +114,13 @@ defmodule Tar do
     record_type data: String.t
   end
 
-  defrecord Entry, pax: nil, has_pax: nil, header: nil, content: nil do
+  defrecord Entry, pax: nil, has_pax: nil, header: nil, content: nil, archive_path: nil, system_path: nil do
     record_type pax: Pax.t
     record_type has_pax: boolean
     record_type header: Header.t
     record_type content: any
+    record_type archive_path: String.t
+    record_type system_path: String.t
   end
 
   defrecord EntryInfo, path: nil, size: nil, type: nil, uname: nil, gname: nil do
@@ -237,19 +242,152 @@ defmodule Tar do
 
         extract_file(io, output_path, file_size)
       )
-      @tar_hard_link -> IO.warn "Ignore hard link in tar file"
-      @tar_symbolic_link -> IO.warn "Ignore symbolic link in tar file"
+      @tar_directory -> (
+        output_path = path
+        if String.length(String.strip(header.prefix, 0)) > 0 do
+          output_path = Path.join(output_path, String.strip(header.prefix, 0))
+        end
+        output_path = Path.absname(Path.join(output_path, String.strip(header.name, 0)))
+
+        unless File.exists?(output_path) do
+          File.mkdir_p!(output_path)
+        end
+      )
+      @tar_pax_extension -> ( 
+        pax = read_pax_data(io, octstring_to_int(header.size))
+        output_path = path
+
+        data = IO.read(io, @header_size)
+        case data do
+          {:error, reason} -> raise Tar.FileError, message: data
+          :eof -> raise Tar.FileError, message: "Unexpected end of file"
+          _ -> ( 
+            if String.length(String.strip(data, 0)) <= 0 do
+              raise Tar.FileError, message: "Unexpected empty header"
+            end
+          )
+        end
+
+        header = parse_header(data)
+        unless verify_checksum(data, header.chksum) do
+          raise Tar.HeaderError, message: "Invalid checksum"
+        end
+
+        if nil == pax["path"] or 0 < size(pax["path"]) do
+          output_path = Path.absname(Path.join(output_path, pax["path"]))
+        else
+          if String.length(String.strip(header.prefix, 0)) > 0 do
+            output_path = Path.join(output_path, String.strip(header.prefix, 0))
+          end
+          output_path = Path.absname(Path.join(output_path, String.strip(header.name, 0)))
+        end
+
+        output_parent_path = Path.dirname(output_path)
+        unless File.exists?(output_parent_path) do
+          File.mkdir_p!(output_parent_path)
+        end
+
+        case header.type do
+          @tar_normal_file -> (
+            file_size = octstring_to_int(header.size)
+            extract_file(io, output_path, file_size)
+          )
+          _ -> nil # TODO: This can't be so simple !
+        end
+      )
+      @tar_gpax_extension -> ( 
+        # TODO but not now !
+        IO.warn "Global PAX not yet supported!"
+      )
+      @tar_fifo              -> IO.warn "Ignore fifo in tar file"
+      @tar_continuous_file   -> IO.warn "Ignore continuous file in tar file"
+      @tar_hard_link         -> IO.warn "Ignore hard link in tar file"
+      @tar_symbolic_link     -> IO.warn "Ignore symbolic link in tar file"
       @tar_character_special -> IO.warn "Ignore character special in tar file"
-      @tar_block_special -> IO.warn "Ignore block special in tar file"
-      @tar_directory -> true
-      @tar_fifo -> IO.warn "Ignore fifo in tar file"
-      @tar_continuous_file -> IO.warn "Ignore continuous file in tar file"
-      @tar_pax_extension -> ( true )
-      @tar_gpax_extension -> ( true )
-      _ -> IO.warn "Ignore undefined in tar file"
+      @tar_block_special     -> IO.warn "Ignore block special in tar file"
+      _                      -> IO.warn "Ignore undefined in tar file"
     end
 
     extract_entry(io, path)
+  end
+
+  defp read_pax_data(io, size) do
+    data = read_pax_data(io, size, "")
+    List.foldl String.split(data, %r/\n/), HashDict.new, fn (line, acc) ->
+      unless line == "" do
+        cut_pos = Enum.find_index(String.graphemes(line), fn(x) -> x == " " end)
+        if nil == cut_pos do
+          raise Tar.FileError, message: "Malformated PAX data"
+        end
+
+        {len, _} = String.to_integer(String.slice(line, 0, cut_pos))
+        line_data = String.slice(line, cut_pos+1, size(line))
+        if len != size(line)+1 do
+          raise Tar.FileError, message: "Malformated PAX data"
+        end
+
+        [key, value] = String.split(line_data, %r/=/, global: false)
+        Dict.put(acc, key, value)
+      else
+        acc
+      end
+    end
+  end
+
+  defp read_pax_data(io, size, data) do
+    read_size = @tar_record_size
+    if size < @tar_record_size do
+      read_size = size
+    end
+
+    new_data = IO.read(io, read_size)
+    case new_data do
+      {:error, reason} -> raise Tar.FileError, message: reason
+      _ -> data = data <> new_data
+    end
+
+    if read_size < @tar_record_size do
+      case IO.read(io, @tar_record_size - read_size) do
+        {:error, reason} -> raise Tar.FileError, message: reason
+        _ -> nil
+      end
+    end
+
+    if size - @tar_record_size > 0 do
+      data = read_pax_data(io, size - @tar_record_size, data)
+    end
+
+    data
+  end
+
+  defp nearest_upper_block_multiple(bytes) do
+    if 0 == rem(bytes, @tar_record_size) do
+      bytes
+    else
+      @tar_record_size * (div(bytes, @tar_record_size) + 1)
+    end
+  end
+
+  defp extract_data(io, oio, size) do
+    write_data = Enum.min([size, @io_buffer_size])
+    read_bytes = nearest_upper_block_multiple(write_data)
+
+    data = IO.binread(io, read_bytes)
+    case data do
+      {:error, reason} -> raise Tar.FileError, message: data
+      _ -> nil
+    end
+
+    case IO.binwrite(oio, :binary.part(data, {0, write_data})) do
+      {:error, reason} -> raise Tar.FileError, message: data
+      _ -> nil
+    end
+
+    size = size - read_bytes
+
+    if size > 0 do
+      extract_data(io, oio, size)
+    end
   end
 
   defp extract_file(io, filename, size) do
@@ -258,19 +396,10 @@ defmodule Tar do
       raise Tar.FileError, message: io
     end
 
-    data = IO.binread(io, size)
-    case data do
-      {:error, reason} -> raise Tar.FileError, message: data
-      _ -> nil
-    end
-
-    case IO.binwrite(oio, data) do
-      {:error, reason} -> raise Tar.FileError, message: data
-      _ -> nil
-    end
+    extract_data(io, oio, size)
 
     case File.close(oio) do
-      {:error, reason} -> raise Tar.FileError, message: data
+      {:error, reason} -> raise Tar.FileError, message: reason
       _ -> nil
     end
   end
